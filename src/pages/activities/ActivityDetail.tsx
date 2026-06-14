@@ -33,6 +33,7 @@ import {
   calcHoursBetween,
 } from "@/utils/formatters";
 import { checkCapacity, checkSkillMatch } from "@/utils/validators";
+import { cn } from "@/lib/utils";
 
 export function ActivityDetail() {
   const { id } = useParams<{ id: string }>();
@@ -45,6 +46,8 @@ export function ActivityDetail() {
   const getSignupsByActivity = useActivityStore((s) => s.getSignupsByActivity);
   const signupActivity = useActivityStore((s) => s.signupActivity);
   const checkinVolunteer = useActivityStore((s) => s.checkinVolunteer);
+  const checkinByCode = useActivityStore((s) => s.checkinByCode);
+  const startActivity = useActivityStore((s) => s.startActivity);
   const completeActivity = useActivityStore((s) => s.completeActivity);
   const incrementHours = useVolunteerStore((s) => s.incrementHours);
   const incrementActivityCount = useVolunteerStore((s) => s.incrementActivityCount);
@@ -53,9 +56,13 @@ export function ActivityDetail() {
   const addNotification = useNotificationStore((s) => s.addNotification);
   const getRequisitionsByActivity = useMaterialStore((s) => s.getRequisitionsByActivity);
   const getMaterialById = useMaterialStore((s) => s.getMaterialById);
+  const users = useAuthStore((s) => s.users);
 
   const activity = id ? getActivityById(id) : undefined;
   const [showCheckinCode, setShowCheckinCode] = useState(false);
+  const [showCodeCheckin, setShowCodeCheckin] = useState(false);
+  const [checkinCodeInput, setCheckinCodeInput] = useState("");
+  const [codeCheckinMessage, setCodeCheckinMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [signupError, setSignupError] = useState("");
   const [signupSuccess, setSignupSuccess] = useState(false);
 
@@ -113,8 +120,6 @@ export function ActivityDetail() {
       return;
     }
 
-    const skillResult = checkSkillMatch(myProfile.skills, activity.skillRequirements);
-
     const result = signupActivity(activity.id, myProfile.id, myProfile.skills);
     if (!result.success) {
       setSignupError(result.message || "报名失败");
@@ -128,31 +133,100 @@ export function ActivityDetail() {
       userId: currentUser!.id,
       type: "activity",
       title: "报名成功",
-      content: `您已成功报名《${activity.title}》，请准时参加。`,
+      content: `您已成功报名《${activity.title}》，请准时参加。活动开始前24小时将发送签到提醒。`,
     });
 
     setSignupSuccess(true);
   };
 
-  const handleCheckin = (signupId: string) => {
-    checkinVolunteer(signupId);
-  };
-
-  const handleComplete = () => {
-    if (confirm("确定要结束该活动吗？结束后将自动为参与者累计工时并生成证书。")) {
-      completeActivity(activity.id);
+  const handleStart = () => {
+    if (confirm("确定要开始该活动吗？开始后志愿者可以进行签到。")) {
+      startActivity(activity.id);
       activitySignups.forEach((signup) => {
-        incrementHours(signup.volunteerId, hours);
         const vol = getVolunteerById(signup.volunteerId);
-        if (vol) {
-          const volUser = useAuthStore.getState().users.find((u) => u.id === vol.userId);
+        if (vol && signup.status === "confirmed") {
+          const volUser = users.find((u) => u.id === vol.userId);
           if (volUser) {
             addNotification({
               userId: volUser.id,
-              type: "activity",
-              title: "活动已完成",
-              content: `《${activity.title}》已结束，您获得了 ${hours} 小时服务时长，证书已生成。`,
+              type: "checkin",
+              title: "活动已开始",
+              content: `《${activity.title}》已开始，请尽快前往签到处完成签到。您的签到码：${signup.checkinCode}`,
             });
+          }
+        }
+      });
+    }
+  };
+
+  const handleCheckin = (signupId: string) => {
+    const signup = activitySignups.find((s) => s.id === signupId);
+    checkinVolunteer(signupId);
+    if (signup) {
+      const vol = getVolunteerById(signup.volunteerId);
+      if (vol) {
+        const volUser = users.find((u) => u.id === vol.userId);
+        if (volUser) {
+          addNotification({
+            userId: volUser.id,
+            type: "checkin",
+            title: "签到成功",
+            content: `您已成功完成《${activity.title}》的签到，祝您服务愉快！`,
+          });
+        }
+      }
+    }
+  };
+
+  const handleCodeCheckin = () => {
+    if (!checkinCodeInput.trim()) {
+      setCodeCheckinMessage({ type: "error", text: "请输入签到码" });
+      return;
+    }
+    const result = checkinByCode(activity.id, checkinCodeInput.trim());
+    if (result.success) {
+      setCodeCheckinMessage({ type: "success", text: `签到成功！志愿者：${result.volunteerName}` });
+      setCheckinCodeInput("");
+      setTimeout(() => setCodeCheckinMessage(null), 2000);
+    } else {
+      setCodeCheckinMessage({ type: "error", text: result.message || "签到失败" });
+    }
+  };
+
+  const handleComplete = () => {
+    const checkedInCount = activitySignups.filter((s) => s.status === "checked_in").length;
+    if (!confirm(`确定要结束该活动吗？\n\n已签到人数：${checkedInCount} 人\n结束后将只为已签到的志愿者累计工时并生成证书。`)) {
+      return;
+    }
+    const result = completeActivity(activity.id);
+    if (result.success) {
+      activitySignups.forEach((signup) => {
+        if (signup.status === "checked_in") {
+          incrementHours(signup.volunteerId, hours);
+          const vol = getVolunteerById(signup.volunteerId);
+          if (vol) {
+            const volUser = users.find((u) => u.id === vol.userId);
+            if (volUser) {
+              addNotification({
+                userId: volUser.id,
+                type: "activity",
+                title: "活动已完成",
+                content: `《${activity.title}》已结束，您获得了 ${hours} 小时服务时长，证书已生成。`,
+              });
+            }
+          }
+        } else if (signup.status === "confirmed") {
+          const vol = getVolunteerById(signup.volunteerId);
+          if (vol) {
+            const volUser = users.find((u) => u.id === vol.userId);
+            if (volUser) {
+              addNotification({
+                userId: volUser.id,
+                type: "activity",
+                title: "活动已结束",
+                content: `《${activity.title}》已结束，因您未到场签到，本次活动不计入工时和证书。`,
+              });
+            }
           }
         }
       });
@@ -184,10 +258,25 @@ export function ActivityDetail() {
                   </div>
                   <h1 className="text-2xl font-bold text-gray-900">{activity.title}</h1>
                 </div>
-                {currentUser?.role !== "volunteer" && activity.status === "published" && (
-                  <Button variant="primary" onClick={handleComplete}>
-                    结束活动
-                  </Button>
+                {currentUser?.role !== "volunteer" && (
+                  <div className="flex gap-2">
+                    {activity.status === "published" && (
+                      <Button variant="primary" onClick={handleStart}>
+                        开始活动
+                      </Button>
+                    )}
+                    {activity.status === "ongoing" && (
+                      <>
+                        <Button variant="secondary" onClick={() => setShowCodeCheckin(true)}>
+                          <QrCode className="w-4 h-4" />
+                          扫码签到
+                        </Button>
+                        <Button variant="primary" onClick={handleComplete}>
+                          结束活动
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -255,9 +344,9 @@ export function ActivityDetail() {
                     })}
                   </div>
                   {skillInfo && !skillInfo.matched && (
-                    <p className="text-xs text-warning-600 mt-2 flex items-center gap-1">
+                    <p className="text-xs text-danger-600 mt-2 flex items-center gap-1">
                       <AlertCircle className="w-3 h-3" />
-                      您缺少部分要求技能，但仍可报名
+                      技能不匹配，无法报名。缺少：{skillInfo.missingSkills.join("、")}
                     </p>
                   )}
                 </div>
@@ -355,14 +444,36 @@ export function ActivityDetail() {
                     </p>
 
                     {(mySignup.status === "confirmed" || mySignup.status === "checked_in") && (
-                      <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                        <p className="text-sm text-gray-500 mb-2">您的签到码</p>
+                      <div className={cn(
+                        "rounded-lg p-4 mb-4",
+                        activity.status === "ongoing" ? "bg-success-50 border border-success-200" : "bg-gray-50"
+                      )}>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-sm text-gray-500">您的签到码</p>
+                          {activity.status === "ongoing" && mySignup.status === "confirmed" && (
+                            <Badge variant="success">活动进行中，请签到</Badge>
+                          )}
+                          {mySignup.status === "checked_in" && (
+                            <Badge variant="success">已签到</Badge>
+                          )}
+                        </div>
                         <div className="flex items-center justify-center gap-2">
-                          <QrCode className="w-8 h-8 text-primary-600" />
-                          <p className="text-2xl font-mono font-bold text-primary-600 tracking-widest">
+                          <QrCode className={cn(
+                            "w-8 h-8",
+                            mySignup.status === "checked_in" ? "text-success-600" : "text-primary-600"
+                          )} />
+                          <p className={cn(
+                            "text-2xl font-mono font-bold tracking-widest",
+                            mySignup.status === "checked_in" ? "text-success-600" : "text-primary-600"
+                          )}>
                             {mySignup.checkinCode}
                           </p>
                         </div>
+                        {activity.status === "ongoing" && mySignup.status === "confirmed" && (
+                          <p className="text-xs text-center text-success-700 mt-2">
+                            请向组织者出示此签到码完成签到
+                          </p>
+                        )}
                       </div>
                     )}
 
@@ -406,10 +517,14 @@ export function ActivityDetail() {
                       className="w-full"
                       size="lg"
                       onClick={handleSignup}
-                      disabled={!capacity.available}
+                      disabled={!capacity.available || (!!skillInfo && !skillInfo.matched)}
                     >
                       <Users className="w-4 h-4" />
-                      {capacity.available ? "立即报名" : "名额已满"}
+                      {!capacity.available
+                        ? "名额已满"
+                        : skillInfo && !skillInfo.matched
+                        ? "技能不匹配"
+                        : "立即报名"}
                     </Button>
                   </div>
                 ) : (
@@ -461,6 +576,69 @@ export function ActivityDetail() {
         {mySignup && (
           <CheckinCode code={mySignup.checkinCode} activityTitle={activity.title} />
         )}
+      </Modal>
+
+      <Modal
+        isOpen={showCodeCheckin}
+        onClose={() => {
+          setShowCodeCheckin(false);
+          setCheckinCodeInput("");
+          setCodeCheckinMessage(null);
+        }}
+        title="扫码签到"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            请输入志愿者出示的6位签到码，或直接在上方报名列表中点击"签到"按钮。
+          </p>
+          <div>
+            <label className="form-label">签到码</label>
+            <input
+              type="text"
+              value={checkinCodeInput}
+              onChange={(e) => setCheckinCodeInput(e.target.value.toUpperCase())}
+              placeholder="请输入6位签到码"
+              maxLength={6}
+              className="form-input text-center text-2xl font-mono tracking-widest uppercase"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCodeCheckin();
+              }}
+            />
+          </div>
+          {codeCheckinMessage && (
+            <div
+              className={cn(
+                "p-3 rounded-lg text-sm flex items-center gap-2 animate-fade-in",
+                codeCheckinMessage.type === "success"
+                  ? "bg-success-50 border border-success-200 text-success-700"
+                  : "bg-danger-50 border border-danger-200 text-danger-700"
+              )}
+            >
+              {codeCheckinMessage.type === "success" ? (
+                <CheckCircle className="w-4 h-4 flex-shrink-0" />
+              ) : (
+                <XCircle className="w-4 h-4 flex-shrink-0" />
+              )}
+              {codeCheckinMessage.text}
+            </div>
+          )}
+          <div className="flex justify-end gap-3 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowCodeCheckin(false);
+                setCheckinCodeInput("");
+                setCodeCheckinMessage(null);
+              }}
+            >
+              关闭
+            </Button>
+            <Button onClick={handleCodeCheckin}>
+              <CheckCircle className="w-4 h-4" />
+              确认签到
+            </Button>
+          </div>
+        </div>
       </Modal>
     </AppLayout>
   );

@@ -14,12 +14,10 @@ import {
   validatePhone,
   validateEmail,
 } from "@/utils/validators";
+import { SKILL_OPTIONS } from "@/constants/skills";
 import { cn } from "@/lib/utils";
 
-const skillOptions = [
-  "急救", "驾驶", "英语", "心理辅导", "教育", "音乐", "手语",
-  "摄影", "计算机", "维修", "医疗知识", "烹饪", "手工", "法律",
-];
+const skillOptions = [...SKILL_OPTIONS];
 
 const genderOptions = [
   { value: "male", label: "男" },

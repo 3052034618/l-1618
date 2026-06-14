@@ -1,6 +1,7 @@
-import { useState, ReactNode } from "react";
+import { useState, ReactNode, useEffect } from "react";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
+import { useActivityStore } from "@/store/useActivityStore";
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -9,6 +10,20 @@ interface AppLayoutProps {
 
 export function AppLayout({ children, title }: AppLayoutProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const checkAndSendCheckinReminders = useActivityStore(
+    (s) => s.checkAndSendCheckinReminders
+  );
+
+  useEffect(() => {
+    const sent = checkAndSendCheckinReminders();
+    if (sent > 0) {
+      console.log(`已发送 ${sent} 条签到提醒`);
+    }
+    const interval = setInterval(() => {
+      checkAndSendCheckinReminders();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [checkAndSendCheckinReminders]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">

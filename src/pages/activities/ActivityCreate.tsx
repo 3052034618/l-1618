@@ -9,6 +9,7 @@ import { useActivityStore } from "@/store/useActivityStore";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useNotificationStore } from "@/store/useNotificationStore";
 import type { ActivityType } from "@/types";
+import { SKILL_OPTIONS } from "@/constants/skills";
 
 const typeOptions = [
   { value: "environmental", label: "环境保护" },
@@ -19,20 +20,7 @@ const typeOptions = [
   { value: "other", label: "其他活动" },
 ];
 
-const skillOptions = [
-  "急救技能",
-  "教学经验",
-  "驾驶执照",
-  "外语能力",
-  "摄影摄像",
-  "活动策划",
-  "医疗背景",
-  "心理咨询",
-  "手语能力",
-  "法律知识",
-  "IT技术",
-  "手工技能",
-];
+const skillOptions = [...SKILL_OPTIONS];
 
 export function ActivityCreate() {
   const navigate = useNavigate();

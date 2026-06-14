@@ -53,12 +53,20 @@ export function ActivityApproval() {
 
   const handleApprove = () => {
     if (!selectedActivity || !currentUser) return;
-    approveActivity(selectedActivity.id, currentUser.id, approvalComment || undefined);
+    const result = approveActivity(selectedActivity.id, currentUser.id, approvalComment || undefined);
     addNotification({
-      userId: selectedActivity.organizerId,
+      userId: result.organizerId,
       type: "approval",
       title: "活动审批通过",
-      content: `您发布的活动「${selectedActivity.title}」已通过审批，已自动上架。`,
+      content: `您发布的活动「${result.activityTitle}」已通过审批，已自动上架。${
+        approvalComment ? `\n审批意见：${approvalComment}` : ""
+      }`,
+    });
+    addNotification({
+      userId: result.organizerId,
+      type: "activity",
+      title: "活动已上架",
+      content: `「${result.activityTitle}」已开始接受志愿者报名，请及时查看。`,
     });
     setShowApproveModal(false);
     setSelectedActivity(null);
@@ -67,14 +75,14 @@ export function ActivityApproval() {
 
   const handleReject = () => {
     if (!selectedActivity || !currentUser) return;
-    rejectActivity(selectedActivity.id, currentUser.id, approvalComment || undefined);
+    const result = rejectActivity(selectedActivity.id, currentUser.id, approvalComment || undefined);
     addNotification({
-      userId: selectedActivity.organizerId,
+      userId: result.organizerId,
       type: "approval",
       title: "活动审批未通过",
-      content: `您发布的活动「${selectedActivity.title}」未通过审批${
-        approvalComment ? `，原因：${approvalComment}` : ""
-      }。`,
+      content: `您发布的活动「${result.activityTitle}」未通过审批${
+        approvalComment ? `。\n拒绝原因：${approvalComment}` : "。"
+      }`,
     });
     setShowRejectModal(false);
     setSelectedActivity(null);

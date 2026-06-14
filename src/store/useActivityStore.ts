@@ -5,23 +5,27 @@ import { mockActivities, mockSignups, mockServiceHours, mockCertificates } from 
 import { generateId, generateCheckinCode, generateCertificateNo, getNowISOString } from "@/utils/generators";
 import { checkCapacity, checkSkillMatch } from "@/utils/validators";
 import { calcHoursBetween } from "@/utils/formatters";
+import { useVolunteerStore } from "./useVolunteerStore";
+import { useNotificationStore } from "./useNotificationStore";
+import { useAuthStore } from "./useAuthStore";
 
 interface ActivityState {
   activities: Activity[];
   signups: Signup[];
   serviceHours: ServiceHours[];
   certificates: Certificate[];
+  sentReminderSignupIds: string[];
 
   createActivity: (data: Omit<Activity, "id" | "status" | "createdAt" | "currentParticipants">) => string;
-  approveActivity: (activityId: string, approverId: string, comment?: string) => void;
-  rejectActivity: (activityId: string, approverId: string, comment?: string) => void;
+  approveActivity: (activityId: string, approverId: string, comment?: string) => { activityTitle: string; organizerId: string };
+  rejectActivity: (activityId: string, approverId: string, comment?: string) => { activityTitle: string; organizerId: string };
   escalatePendingActivities: () => Activity[];
 
   signupActivity: (
     activityId: string,
     volunteerId: string,
     volunteerSkills: string[]
-  ) => { success: boolean; message?: string; signupId?: string };
+  ) => { success: boolean; message?: string; signupId?: string; missingSkills?: string[] };
 
   getSignupByVolunteerAndActivity: (
     volunteerId: string,
@@ -32,7 +36,10 @@ interface ActivityState {
   getSignupsByVolunteer: (volunteerId: string) => Signup[];
 
   checkinVolunteer: (signupId: string) => void;
-  completeActivity: (activityId: string) => void;
+  checkinByCode: (activityId: string, code: string) => { success: boolean; message?: string; volunteerName?: string };
+  startActivity: (activityId: string) => void;
+  completeActivity: (activityId: string) => { success: boolean; completedCount: number; message?: string };
+  checkAndSendCheckinReminders: () => number;
 
   getPublishedActivities: () => Activity[];
   getPendingActivities: () => Activity[];
@@ -49,6 +56,7 @@ export const useActivityStore = create<ActivityState>()(
       signups: mockSignups,
       serviceHours: mockServiceHours,
       certificates: mockCertificates,
+      sentReminderSignupIds: [],
 
       createActivity: (data) => {
         const activity: Activity = {
@@ -63,6 +71,7 @@ export const useActivityStore = create<ActivityState>()(
       },
 
       approveActivity: (activityId, approverId, comment) => {
+        const activity = get().activities.find((a) => a.id === activityId);
         set({
           activities: get().activities.map((a) =>
             a.id === activityId
@@ -76,9 +85,14 @@ export const useActivityStore = create<ActivityState>()(
               : a
           ),
         });
+        return {
+          activityTitle: activity?.title || "",
+          organizerId: activity?.organizerId || "",
+        };
       },
 
       rejectActivity: (activityId, approverId, comment) => {
+        const activity = get().activities.find((a) => a.id === activityId);
         set({
           activities: get().activities.map((a) =>
             a.id === activityId
@@ -92,6 +106,10 @@ export const useActivityStore = create<ActivityState>()(
               : a
           ),
         });
+        return {
+          activityTitle: activity?.title || "",
+          organizerId: activity?.organizerId || "",
+        };
       },
 
       escalatePendingActivities: () => {
@@ -138,6 +156,13 @@ export const useActivityStore = create<ActivityState>()(
         }
 
         const skillMatch = checkSkillMatch(volunteerSkills, activity.skillRequirements);
+        if (!skillMatch.matched) {
+          return {
+            success: false,
+            message: `技能不匹配，缺少：${skillMatch.missingSkills.join("、")}`,
+            missingSkills: skillMatch.missingSkills,
+          };
+        }
 
         const signup: Signup = {
           id: generateId(),
@@ -145,7 +170,7 @@ export const useActivityStore = create<ActivityState>()(
           activityId,
           status: "confirmed",
           checkinCode: generateCheckinCode(),
-          skillMatched: skillMatch.matched,
+          skillMatched: true,
           signupTime: getNowISOString(),
         };
 
@@ -188,41 +213,77 @@ export const useActivityStore = create<ActivityState>()(
         });
       },
 
+      checkinByCode: (activityId, code) => {
+        const signup = get().signups.find(
+          (s) => s.activityId === activityId && s.checkinCode === code.toUpperCase()
+        );
+        if (!signup) {
+          return { success: false, message: "签到码无效" };
+        }
+        if (signup.status === "checked_in" || signup.status === "completed") {
+          return { success: false, message: "该签到码已使用过" };
+        }
+        if (signup.status === "cancelled") {
+          return { success: false, message: "报名已取消" };
+        }
+        const activity = get().activities.find((a) => a.id === activityId);
+        if (activity && activity.status !== "ongoing") {
+          return { success: false, message: "活动尚未开始，无法签到" };
+        }
+        const volunteer = useVolunteerStore.getState().getVolunteerById(signup.volunteerId);
+        set({
+          signups: get().signups.map((s) =>
+            s.id === signup.id
+              ? { ...s, status: "checked_in", checkinTime: getNowISOString() }
+              : s
+          ),
+        });
+        return { success: true, volunteerName: volunteer?.realName };
+      },
+
+      startActivity: (activityId) => {
+        const activity = get().activities.find((a) => a.id === activityId);
+        if (!activity || activity.status !== "published") return;
+        set({
+          activities: get().activities.map((a) =>
+            a.id === activityId ? { ...a, status: "ongoing" as ActivityStatus } : a
+          ),
+        });
+      },
+
       completeActivity: (activityId) => {
         const activity = get().activities.find((a) => a.id === activityId);
-        if (!activity) return;
+        if (!activity) return { success: false, completedCount: 0, message: "活动不存在" };
+        if (activity.status === "completed") {
+          return { success: false, completedCount: 0, message: "活动已结束" };
+        }
 
         const hours = calcHoursBetween(activity.startTime, activity.endTime);
-        const activitySignups = get()
-          .signups.filter(
-            (s) =>
-              s.activityId === activityId &&
-              (s.status === "checked_in" || s.status === "confirmed")
-          );
+        const activitySignups = get().signups.filter(
+          (s) => s.activityId === activityId && s.status === "checked_in"
+        );
 
         const newServiceHours: ServiceHours[] = [];
         const newCertificates: Certificate[] = [];
         const updatedSignupIds: string[] = [];
 
         activitySignups.forEach((signup) => {
-          if (signup.status === "checked_in" || signup.status === "confirmed") {
-            newServiceHours.push({
-              id: generateId(),
-              volunteerId: signup.volunteerId,
-              activityId,
-              hours,
-              serviceDate: activity.startTime.split("T")[0],
-            });
-            newCertificates.push({
-              id: generateId(),
-              volunteerId: signup.volunteerId,
-              activityId,
-              certificateNo: generateCertificateNo(),
-              hours,
-              issueDate: getNowISOString(),
-            });
-            updatedSignupIds.push(signup.id);
-          }
+          newServiceHours.push({
+            id: generateId(),
+            volunteerId: signup.volunteerId,
+            activityId,
+            hours,
+            serviceDate: activity.startTime.split("T")[0],
+          });
+          newCertificates.push({
+            id: generateId(),
+            volunteerId: signup.volunteerId,
+            activityId,
+            certificateNo: generateCertificateNo(),
+            hours,
+            issueDate: getNowISOString(),
+          });
+          updatedSignupIds.push(signup.id);
         });
 
         set({
@@ -237,6 +298,61 @@ export const useActivityStore = create<ActivityState>()(
           serviceHours: [...get().serviceHours, ...newServiceHours],
           certificates: [...get().certificates, ...newCertificates],
         });
+
+        return {
+          success: true,
+          completedCount: activitySignups.length,
+          message: `已为 ${activitySignups.length} 位已签到志愿者累计工时并生成证书`,
+        };
+      },
+
+      checkAndSendCheckinReminders: () => {
+        const now = Date.now();
+        const twentyFourHours = 24 * 60 * 60 * 1000;
+        const sentReminders = new Set(get().sentReminderSignupIds);
+        const newlySent: string[] = [];
+
+        const activitiesToRemind = get().activities.filter(
+          (a) => a.status === "published" || a.status === "ongoing"
+        );
+
+        activitiesToRemind.forEach((activity) => {
+          const startTime = new Date(activity.startTime).getTime();
+          const diffToStart = startTime - now;
+
+          if (diffToStart > 0 && diffToStart <= twentyFourHours) {
+            const activitySignups = get()
+              .signups.filter((s) => s.activityId === activity.id && s.status === "confirmed");
+
+            activitySignups.forEach((signup) => {
+              if (!sentReminders.has(signup.id)) {
+                const volunteer = useVolunteerStore.getState().getVolunteerById(signup.volunteerId);
+                if (volunteer) {
+                  const volunteerUser = useAuthStore
+                    .getState()
+                    .users.find((u) => u.id === volunteer.userId);
+                  if (volunteerUser) {
+                    useNotificationStore.getState().addNotification({
+                      userId: volunteerUser.id,
+                      type: "checkin",
+                      title: "活动签到提醒",
+                      content: `《${activity.title}》将于24小时内开始，请准时参加。\n活动地点：${activity.location}\n您的签到码：${signup.checkinCode}`,
+                    });
+                    newlySent.push(signup.id);
+                  }
+                }
+              }
+            });
+          }
+        });
+
+        if (newlySent.length > 0) {
+          set({
+            sentReminderSignupIds: [...get().sentReminderSignupIds, ...newlySent],
+          });
+        }
+
+        return newlySent.length;
       },
 
       getPublishedActivities: () => {
